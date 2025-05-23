@@ -35,11 +35,23 @@ sensorsNames = [
     "left"]
 sensors = {}
 
+# Constants for realistic driving behavior
+MAX_SPEED = 120  # km/h
+MIN_SPEED = 60   # km/h
+SAFE_DISTANCE = 20.0  # meters
+OVERTAKE_DISTANCE = 30.0  # meters
+ACCELERATION_RATE = 2.0  # km/h per step
+DECELERATION_RATE = 3.0  # km/h per step
+STEERING_SMOOTHING = 0.3  # Smoothing factor for steering
+
 lanePositions = [10.6, 6.875, 3.2]
 currentLane = 1
 overtakingSide = None
-maxSpeed = 80
-safeOvertake = False
+targetSpeed = MAX_SPEED
+currentSpeed = 0
+safeOvertake = True
+overtakeTimer = 0
+MAX_OVERTAKE_TIME = 100  # Maximum time to complete overtaking maneuver
 
 
 def apply_PID(position, targetPosition):
@@ -114,51 +126,100 @@ def apply_lane_detection(image):
 
     return prediction
 
+def calculate_safe_speed(front_distance, front_range):
+    """Calculate safe speed based on distance to vehicle ahead"""
+    if front_distance < SAFE_DISTANCE:
+        return MIN_SPEED
+    elif front_distance < OVERTAKE_DISTANCE:
+        return MIN_SPEED + (MAX_SPEED - MIN_SPEED) * (front_distance - SAFE_DISTANCE) / (OVERTAKE_DISTANCE - SAFE_DISTANCE)
+    return MAX_SPEED
+
+def smooth_steering(current_angle, target_angle):
+    """Apply smoothing to steering angle changes"""
+    return current_angle + (target_angle - current_angle) * STEERING_SMOOTHING
+
+def is_safe_to_overtake(side):
+    """Check if it's safe to overtake on the specified side"""
+    if side == 'left':
+        # Check left side sensors
+        if (sensors["left"].getValue() < 0.8 * sensors["left"].getMaxValue() or
+            sensors["rear left"].getValue() < 0.8 * sensors["rear left"].getMaxValue()):
+            return False
+    else:
+        # Check right side sensors
+        if (sensors["right"].getValue() < 0.8 * sensors["right"].getMaxValue() or
+            sensors["rear right"].getValue() < 0.8 * sensors["rear right"].getMaxValue()):
+            return False
+    return True
+
 while driver.step() != -1:
     frontDistance = sensors["front"].getValue()
     frontRange = sensors["front"].getMaxValue()
-    speed = maxSpeed * frontDistance / frontRange
-    if sensors["front right 0"].getValue() < 8.0 or sensors["front left 0"].getValue() < 8.0:
-        speed = min(0.5 * maxSpeed, speed)
+    
+    # Calculate target speed based on safety
+    targetSpeed = calculate_safe_speed(frontDistance, frontRange)
+    
+    # Smooth speed changes
+    if currentSpeed < targetSpeed:
+        currentSpeed = min(currentSpeed + ACCELERATION_RATE, targetSpeed)
+    else:
+        currentSpeed = max(currentSpeed - DECELERATION_RATE, targetSpeed)
+    
+    # Handle overtaking logic
     if overtakingSide is not None:
-        if overtakingSide == 'right' and sensors["left"].getValue() < 0.8 * sensors["left"].getMaxValue():
+        overtakeTimer += 1
+        if overtakeTimer > MAX_OVERTAKE_TIME:
+            # Abort overtaking if taking too long
             overtakingSide = None
-            currentLane -= 1
-        elif overtakingSide == 'left' and sensors["right"].getValue() < 0.8 * sensors["right"].getMaxValue():
+            overtakeTimer = 0
+        elif not is_safe_to_overtake(overtakingSide):
+            # Abort if conditions become unsafe
             overtakingSide = None
-            currentLane += 1
-        else:  
-            speed2 = reduce_speed_if_vehicle_on_side(speed, overtakingSide)
-            if speed2 < speed:
-                speed = speed2
-    speed = get_filtered_speed(speed)
-    driver.setCruisingSpeed(speed)
-    speedDiff = driver.getCurrentSpeed() - speed
+            overtakeTimer = 0
+        else:
+            # Adjust speed during overtaking
+            currentSpeed = min(currentSpeed, MAX_SPEED * 0.9)
+    
+    # Apply speed control
+    driver.setCruisingSpeed(currentSpeed)
+    speedDiff = driver.getCurrentSpeed() - currentSpeed
     if speedDiff > 0:
-        driver.setBrakeIntensity(min(speedDiff / speed, 1))
+        driver.setBrakeIntensity(min(speedDiff / currentSpeed, 1))
     else:
         driver.setBrakeIntensity(0)
+    
+    # Overtaking decision making
     if frontDistance < 0.8 * frontRange and overtakingSide is None:
         if (is_vehicle_on_side("left") and
-                (not safeOvertake or sensors["rear left"].getValue() > 0.8 * sensors["rear left"].getMaxValue()) and
-                sensors["left"].getValue() > 0.8 * sensors["left"].getMaxValue() and
+                is_safe_to_overtake("left") and
                 currentLane < 2):
             currentLane += 1
             overtakingSide = 'right'
+            overtakeTimer = 0
         elif (is_vehicle_on_side("right") and
-                (not safeOvertake or sensors["rear right"].getValue() > 0.8 * sensors["rear right"].getMaxValue()) and
-                sensors["right"].getValue() > 0.8 * sensors["right"].getMaxValue() and
+                is_safe_to_overtake("right") and
                 currentLane > 0):
             currentLane -= 1
             overtakingSide = 'left'
+            overtakeTimer = 0
+    
+    # Lane position control with smoothing
     position = gps.getValues()[1]
-    angle = max(min(apply_PID(position, lanePositions[currentLane]), 0.5), -0.5)
-    driver.setSteeringAngle(-angle)
-    if abs(position - lanePositions[currentLane]) < 1.5:  
+    targetAngle = apply_PID(position, lanePositions[currentLane])
+    currentAngle = driver.getSteeringAngle()
+    smoothedAngle = smooth_steering(currentAngle, targetAngle)
+    driver.setSteeringAngle(-smoothedAngle)
+    
+    # Reset overtaking state when lane change is complete
+    if abs(position - lanePositions[currentLane]) < 1.0:
         overtakingSide = None
+        overtakeTimer = 0
+    
+    # Process camera image and lane detection
     image = camera.getImage()
     image = np.frombuffer(image, np.uint8).reshape((camera.getHeight(), camera.getWidth(), 4))
     lane_detection_result = apply_lane_detection(image)
-
+    
+    # Display results
     cv2.imshow("Lane Detection Result", lane_detection_result)
     cv2.waitKey(1)
