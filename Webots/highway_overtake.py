@@ -12,13 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""vehicle_driver controller."""
+"""
+Highway Overtaking Simulation with CNN-based Lane Detection
+Author: Vansh
+Date: 2024
+
+This controller implements an autonomous vehicle system that can:
+1. Detect lanes using a CNN-based model
+2. Perform safe overtaking maneuvers
+3. Maintain safe distances and speeds
+4. Handle complex highway scenarios
+
+The system uses:
+- CNN for lane detection
+- PID controller for lane keeping
+- Sensor fusion for obstacle detection
+- State machine for overtaking logic
+"""
 
 import cv2
 import numpy as np
 from tensorflow.keras.models import load_model
 from vehicle import Driver
 
+# Load the CNN model for lane detection
 lane_detection_model = load_model('D:/Projects/ADAS/full_CNN_modell.h5')
 sensorsNames = [
     "front",
